@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QGroupBox, QGridLayout, QSplitter
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QDateTime
-from PyQt6.QtGui import QFont, QTextCursor
+from PyQt6.QtGui import QFont, QTextCursor, QIcon
 
 
 class LogThread(QThread):
@@ -868,6 +868,13 @@ if __name__ == '__main__':
     
     # 设置应用程序样式
     app.setStyle('Fusion')
+    
+    # 设置应用程序图标（显示在Dock栏）
+    icon_path = os.path.join('static', 'icon.icns')
+    if os.path.exists(icon_path):
+        app.setWindowIcon(QIcon(icon_path))
+    else:
+        print(f'警告: 图标文件未找到: {icon_path}')
     
     # 创建并显示主窗口
     window = MainWindow()
