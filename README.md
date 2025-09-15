@@ -25,7 +25,7 @@
 2. 克隆或下载此项目到本地。
 3. 打开终端，导航到项目目录：
    ```
-   cd /Users/reputati0n/Code/Python/yongyou-scan
+   cd yongyou-scan/
    ```
 4. 安装依赖包：
    ```
