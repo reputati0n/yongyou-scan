@@ -244,7 +244,7 @@ class ScanThread(QThread):
             return f'漏洞检测结果: uapjs命令执行漏洞检测失败 - {error_msg}'
 
     def _check_poc(self, vuln_name, poc_content):
-        """通用POC检测方法，执行POC请求并检查响应状态码是否为200"""
+        """通用POC检测方法，执行POC请求并检查响应"""
         try:
             target_url = self.target.rstrip('/')
             
@@ -288,9 +288,10 @@ class ScanThread(QThread):
             
             # 提取请求头
             headers = {}
-            headers_match = re.search(r'HTTP/1\.[01]\s+[0-9]+\s+.*?\n(.*?)\n\n', poc_content, re.DOTALL)
-            if headers_match:
-                headers_section = headers_match.group(1)
+            # 修正：使用更可靠的正则表达式解析请求头
+            headers_block_match = re.search(r'^.*\n(.*?)\n\n', poc_content, re.DOTALL)
+            if headers_block_match:
+                headers_section = headers_block_match.group(1)
                 for line in headers_section.split('\n'):
                     if ':' in line:
                         key, value = line.split(':', 1)
@@ -310,28 +311,32 @@ class ScanThread(QThread):
             
             self.log_signal.emit(f'正在检测 {vuln_name}...')
             
-            # 发送请求
-            response = None
-            if method.upper() == 'GET':
-                response = requests.get(request_url, headers=headers, proxies=self.proxy, timeout=10, verify=False)
-            elif method.upper() == 'POST':
-                if 'Content-Type' in headers and 'multipart/form-data' in headers['Content-Type']:
-                    # 处理multipart/form-data
-                    response = requests.post(request_url, headers=headers, data=data, proxies=self.proxy, timeout=10, verify=False)
-                else:
-                    # 普通POST请求
-                    response = requests.post(request_url, headers=headers, data=data, proxies=self.proxy, timeout=10, verify=False)
-            else:
-                # 其他HTTP方法
-                response = requests.request(method, request_url, headers=headers, data=data, proxies=self.proxy, timeout=10, verify=False)
+            # 发送请求 (简化为使用 requests.request)
+            response = requests.request(method, request_url, headers=headers, data=data, proxies=self.proxy, timeout=10, verify=False)
             
-            # 检查响应状态码
-            if response.status_code == 200:
-                result = f'漏洞检测结果: {target_url} 可能存在 {vuln_name}！(返回状态码200)'
-                self.log_signal.emit(f'漏洞检测发现: 目标可能存在{vuln_name}')
+            # 解析验证规则
+            verification_match = re.search(r'## verification\n```\n((?:.|\n)*?)\n```', poc_content)
+            if verification_match:
+                verification_rules = verification_match.group(1).strip()
+                rules = dict(re.findall(r'(\w+):\s*(.*)', verification_rules))
+                
+                status_code_ok = 'status_code' not in rules or response.status_code == int(rules['status_code'])
+                body_contains_ok = 'body_contains' not in rules or rules['body_contains'] in response.text
+                
+                if status_code_ok and body_contains_ok:
+                    result = f'漏洞检测结果: {target_url} 存在 {vuln_name}！'
+                    self.log_signal.emit(f'漏洞检测发现: 目标存在{vuln_name}')
+                else:
+                    result = f'漏洞检测结果: {target_url} 未检测到 {vuln_name} (验证失败)'
+                    self.log_signal.emit(f'漏洞检测结果: 未发现{vuln_name}')
             else:
-                result = f'漏洞检测结果: {target_url} 未检测到 {vuln_name} (返回状态码{response.status_code})'
-                self.log_signal.emit(f'漏洞检测结果: 未发现{vuln_name}')
+                # 保持向后兼容
+                if response.status_code == 200:
+                    result = f'漏洞检测结果: {target_url} 可能存在 {vuln_name}！(仅检查状态码200)'
+                    self.log_signal.emit(f'漏洞检测发现: 目标可能存在{vuln_name}')
+                else:
+                    result = f'漏洞检测结果: {target_url} 未检测到 {vuln_name} (返回状态码{response.status_code})'
+                    self.log_signal.emit(f'漏洞检测结果: 未发现{vuln_name}')
             
             return result
         except Exception as e:
@@ -717,11 +722,61 @@ class MainWindow(QMainWindow):
         vuln_layout = QHBoxLayout()
         vuln_layout.addWidget(QLabel('漏洞选项:'))
         self.exploit_vuln = QComboBox()
-        self.exploit_vuln.addItems(['请选择漏洞', '漏洞 1', '漏洞 2'])
+        self.exploit_vuln.addItems([
+            '请选择漏洞',
+            'BshServlet命令执行', 
+            'grouptemplet 文件上传', 
+            'uapjs 命令执行',
+            '用友NC word.docx任意文件读取漏洞',
+            '用友NC-ActionServlet存在SQL注入漏洞',
+            '用友NC-Cloud uploadChunk 任意文件上传漏洞',
+            '用友NC-Cloud_importhttpscer接口存在任意文件上传漏洞',
+            '用友NC-Cloud接口blobRefClassSearch存在反序列化漏洞',
+            '用友NC-Cloud文件服务器用户登陆绕过漏洞',
+            '用友NC-Cloud系统queryPsnInfo存在SQL注入漏洞',
+            '用友NC-Cloud系统queryStaffByName存在SQL注入漏洞',
+            '用友NC-Cloud系统show_download_content接口存在SQL注入漏洞',
+            '用友NC-Cloud系统接口getStaffInfo存在SQL注入漏洞',
+            '用友NC-avatar接口存在文件上传漏洞',
+            '用友NC-bill存在SQL注入漏洞',
+            '用友NC-cartabletimeline存在SQL注入漏洞',
+            '用友NC-complainbilldetail存在SQL注入漏洞',
+            '用友NC-downCourseWare任意文件读取',
+            '用友NC-downTax存在SQL注入漏洞',
+            '用友NC-oacoSchedulerEvents接口存在sql注入漏洞',
+            '用友NC-pagesServlet存在SQL注入',
+            '用友NC-process存在SQL注入漏洞',
+            '用友NC-runStateServlet接口存在SQL注入漏洞',
+            '用友NC-saveDoc.ajax存在任意文件上传漏洞',
+            '用友NC-showcontent接口存在sql注入漏洞',
+            '用友NC-uploadControl接口存在文件上传漏洞',
+            '用友NC-warningDetailInfo接口存在SQL注入漏洞',
+            '用友NC-workflowImageServlet接口存在sql注入漏洞',
+            '用友NCCloud系统runScript存在SQL注入漏洞',
+            '用友NC_CLOUD_smartweb2.RPC.d_XML外部实体注入',
+            '用友NC_Cloud_soapFormat.ajax接口存在XXE',
+            '用友NC_saveImageServlet接口存在文件上传漏洞',
+            '用友NC及U8cloud系统接口LoggingConfigServlet存在反序列化漏洞(XVE-2024-18151)',
+            '用友NC接口ConfigResourceServlet存在反序列漏洞',
+            '用友NC接口PaWfm存在sql注入漏洞',
+            '用友NC接口download存在SQL注入漏洞',
+            '用友NC接口saveXmlToFIleServlet存在文件上传',
+            '用友NC的download文件存在任意文件读取漏洞',
+            '用友NC系统FileManager接口存在任意文件上传漏洞',
+            '用友NC系统complainjudge接口SQL注入漏洞(XVE-2024-19043)',
+            '用友NC系统linkVoucher存在sql注入漏洞',
+            '用友NC系统printBill接口存在任意文件读取漏洞',
+            '用友NC系统querygoodsgridbycode接口code参数存在SQL注入漏洞',
+            '用友NC系统registerServlet接口存在JNDI注入漏洞',
+            '用友NC系统word.docx存在信息泄露漏洞',
+            '用友NC系统接口UserAuthenticationServlet存在反序列化RCE漏洞(XVE-2024-18302)',
+            '用友NC系统接口link存在SQL注入漏洞',
+            '用友NC系统接口yerfile_down存在SQL注入漏洞',
+            '用友nc-cloud RCE',
+            '用友nc电子采购信息系统securitycheck存在sql注入'
+        ])
         vuln_layout.addWidget(self.exploit_vuln)
         layout.addLayout(vuln_layout)
-        
-
         
         # 利用按钮
         button_layout = QHBoxLayout()

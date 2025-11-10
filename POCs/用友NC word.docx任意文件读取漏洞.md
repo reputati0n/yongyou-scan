@@ -16,5 +16,11 @@ Connection: Keep-Alive
 
 ```
 
+## verification
+```
+status_code: 200
+body_contains: "<web-app"
+```
+
 ## 漏洞复现
 ![0152cd5a2d208fb2e336de5ac3621ebb](https://github.com/wy876/POC/assets/139549762/05dcd3bf-a6ae-4aac-95ca-e6788e2eadb0)
